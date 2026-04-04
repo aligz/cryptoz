@@ -10,7 +10,7 @@ import { Terminal as TerminalIcon, Activity, Settings2, Play, Square, RefreshCcw
 export default function Dashboard() {
   const [status, setStatus] = useState<string>('STOPPED');
   const [monitoredCount, setMonitoredCount] = useState<number>(0);
-  const [config, setConfig] = useState<any>({ timeframe: '5m', smaPeriod: 20, volumeMultiplier: 3, minVolume: 10000 });
+  const [config, setConfig] = useState<any>({ timeframe: '5m', smaPeriod: 20, volumeMultiplier: 3, minVolume: 10000, minGreenCandles: 0, minPriceChange: 0 });
   const [alerts, setAlerts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -32,9 +32,17 @@ export default function Dashboard() {
       if (botData.config && !savingConfig && !isEditing) {
         setConfig(botData.config);
       }
-      setAlerts(alertsData);
+      
+      // Safety check: Ensure alertsData is an array
+      if (Array.isArray(alertsData)) {
+        setAlerts(alertsData);
+      } else {
+        console.error('API Error:', alertsData.error || 'Unknown error');
+        setAlerts([]); // Reset to empty array on error
+      }
     } catch (e) {
       console.error('Failed to sync data');
+      setAlerts([]); // Ensure it's at least an array
     } finally {
       if (loading) setLoading(false);
     }
@@ -200,6 +208,17 @@ export default function Dashboard() {
                     className="bg-transparent border-[#00FFD1]/40 text-[#00FFD1] rounded-none focus-visible:ring-1 focus-visible:ring-[#00FFD1]"
                   />
                   <p className="text-[10px] text-[#00FFD1]/40 tracking-tight italic">// Wait for N green candles after breakout signal.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs text-[#00FFD1]/70 uppercase tracking-wider">Minimum Price Change (%)</Label>
+                  <Input 
+                    type="number" 
+                    step="0.1"
+                    min="0"
+                    value={config.minPriceChange || 0} 
+                    onChange={e => updateConfigField('minPriceChange', parseFloat(e.target.value) || 0)}
+                    className="bg-transparent border-[#00FFD1]/40 text-[#00FFD1] rounded-none focus-visible:ring-1 focus-visible:ring-[#00FFD1]"
+                  />
                 </div>
                 <Button 
                   onClick={handleSaveConfig}

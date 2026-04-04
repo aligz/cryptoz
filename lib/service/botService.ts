@@ -1,14 +1,14 @@
 import prisma from '../prisma';
 
 // Bypass TLS certificate check for local development
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+// process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 type BotStatus = 'STOPPED' | 'STARTING' | 'RUNNING' | 'ERROR';
 
 class BinanceBotService {
   private status: BotStatus = 'STOPPED';
   private ws: WebSocket | null = null;
-  private config = { timeframe: '5m', smaPeriod: 20, volumeMultiplier: 3.0, minVolume: 10000.0, minGreenCandles: 0 };
+  private config = { timeframe: '5m', smaPeriod: 20, volumeMultiplier: 3.0, minVolume: 10000.0, minGreenCandles: 0, minPriceChange: 0.0 };
   private volumeHistory: Record<string, number[]> = {};
   private activeSymbols: string[] = [];
   private pendingAlerts: Record<string, { count: number, price: number, prevVol: number, currVol: number, mult: number }> = {};
@@ -25,7 +25,7 @@ class BinanceBotService {
     return this.config;
   }
 
-  public updateConfig(newConfig: { timeframe: string, smaPeriod: number, volumeMultiplier: number, minVolume: number, minGreenCandles: number }) {
+  public updateConfig(newConfig: { timeframe: string, smaPeriod: number, volumeMultiplier: number, minVolume: number, minGreenCandles: number, minPriceChange: number }) {
     this.config = newConfig;
   }
 
@@ -50,6 +50,7 @@ class BinanceBotService {
         volumeMultiplier: dbConfig.volumeMultiplier,
         minVolume: dbConfig.minVolume,
         minGreenCandles: dbConfig.minGreenCandles || 0,
+        minPriceChange: dbConfig.minPriceChange || 0.0,
       };
 
       // 2. Fetch Symbols (Top 100 USDT pairs by volume to avoid ws limits, or all)
@@ -111,8 +112,16 @@ class BinanceBotService {
           const history = this.volumeHistory[symbol];
           const averageVolume = history.reduce((a, b) => a + b, 0) / history.length;
 
+          const openPrice = parseFloat(kline.o);
+          const currentPrice = parseFloat(kline.c);
+          const priceChangePercent = Math.abs(((currentPrice - openPrice) / openPrice) * 100);
+
           // Check if breakout (even before candle is closed!) - Filter with minVolume limit
-          if (averageVolume >= this.config.minVolume && currentVolume > averageVolume * this.config.volumeMultiplier) {
+          if (
+            averageVolume >= this.config.minVolume &&
+            currentVolume > averageVolume * this.config.volumeMultiplier &&
+            priceChangePercent >= this.config.minPriceChange
+          ) {
             // Detect Breakout
             if (this.config.minGreenCandles === 0) {
               this.triggerAlert({
@@ -150,7 +159,7 @@ class BinanceBotService {
               if (isGreen) {
                 this.pendingAlerts[symbol].count++;
                 console.log(`[Bot] ${symbol} confirmed green candle ${this.pendingAlerts[symbol].count}/${this.config.minGreenCandles}`);
-                
+
                 if (this.pendingAlerts[symbol].count >= this.config.minGreenCandles) {
                   const alert = this.pendingAlerts[symbol];
                   this.triggerAlert({
