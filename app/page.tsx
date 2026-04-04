@@ -44,7 +44,7 @@ export default function Dashboard() {
     fetchData();
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, [isEditing]); // Re-subscribe when editing state changes to ensure fresh data if stopped editing
+  }, [isEditing, savingConfig]); // Recreate interval with fresh closure when these change
 
   const handleStartStop = async (action: 'start' | 'stop') => {
     setStatus(action === 'start' ? 'STARTING' : 'STOPPED');
@@ -57,13 +57,22 @@ export default function Dashboard() {
 
   const handleSaveConfig = async () => {
     setSavingConfig(true);
-    await fetch('/api/config', {
-      method: 'PUT',
-      body: JSON.stringify(config)
-    });
-    setIsEditing(false); // Done editing
-    setSavingConfig(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PUT',
+        body: JSON.stringify(config)
+      });
+      const updatedConfig = await res.json();
+      if (updatedConfig && !updatedConfig.error) {
+        setConfig(updatedConfig); // Sync immediately with server response
+      }
+    } catch (e) {
+      console.error('Failed to save config');
+    } finally {
+      setIsEditing(false);
+      setSavingConfig(false);
+      fetchData();
+    }
   };
 
   const updateConfigField = (field: string, value: any) => {
