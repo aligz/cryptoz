@@ -115,9 +115,29 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Terminal Theme Variables */
+  --terminal-bg: #0A0A0F;
+  --terminal-cyan: #00FFD1;
+  --terminal-cyan-glow: rgba(0, 255, 209, 0.5);
+  --terminal-purple: #A855F7;
+  --terminal-red: #EF4444;
+  --terminal-green: #22C55E;
+  --terminal-yellow: #EAB308;
 }
 
 @layer base {
+  .terminal-theme {
+    --background: var(--terminal-bg);
+    --foreground: #E2E8F0;
+    --primary: var(--terminal-cyan);
+    --primary-foreground: var(--terminal-bg);
+    --border: var(--terminal-cyan);
+    --ring: var(--terminal-cyan);
+    --radius: 0px;
+    font-family: var(--font-mono), monospace;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
