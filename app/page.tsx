@@ -121,6 +121,11 @@ export default function Dashboard() {
                 ${calculateTotalPnL().toFixed(2)}
               </span>
             </div>
+            {status === 'RUNNING' && (
+              <div className="px-4 py-1.5 uppercase text-xs font-bold tracking-wider border bg-[#00FFD1]/5 text-[#00FFD1] border-[#00FFD1]/30">
+                LOCKED: {monitoredCount} PAIRS
+              </div>
+            )}
           </div>
         </header>
 
@@ -328,7 +333,14 @@ export default function Dashboard() {
                               </td>
                               <td className="px-6 py-4 font-bold text-white flex items-center gap-2">
                                 <Zap size={12} className="text-yellow-400 opacity-50" />
-                                {alert.symbol}
+                                <a 
+                                  href={`https://www.tradingview.com/chart/?symbol=BINANCE:${alert.symbol}`} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="hover:text-[#00FFD1] hover:underline transition-colors"
+                                >
+                                  {alert.symbol}
+                                </a>
                               </td>
                               <td className="px-6 py-4 text-right">
                                 <span className="bg-[#00FFD1]/10 text-[#00FFD1] px-2 py-0.5 border border-[#00FFD1]/20 text-[10px]">
