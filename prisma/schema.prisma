@@ -26,6 +26,26 @@ model BotConfig {
   minVolume        Float    @default(10000.0)
   minGreenCandles  Int      @default(0)
   minPriceChange   Float    @default(0.0)
+  totalCapital     Float    @default(1000.0)
+  tradeAmount      Float    @default(100.0)
+  trailingStopPct  Float    @default(1.5)
+}
+
+model PaperTrade {
+  id              String   @id @default(uuid())
+  symbol          String
+  buyPrice        Float
+  amount          Float
+  invested        Float
+  status          String   @default("OPEN") // OPEN, CLOSED
+  peakPrice       Float
+  closePrice      Float?
+  pnl             Float?
+  pnlPercent      Float?
+  createdAt       DateTime @default(now())
+  closedAt        DateTime?
+
+  @@index([symbol, status])
 }
 
 model BreakoutAlert {

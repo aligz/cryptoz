@@ -8,10 +8,21 @@ type BotStatus = 'STOPPED' | 'STARTING' | 'RUNNING' | 'ERROR';
 class BinanceBotService {
   private status: BotStatus = 'STOPPED';
   private ws: WebSocket | null = null;
-  private config = { timeframe: '5m', smaPeriod: 20, volumeMultiplier: 3.0, minVolume: 10000.0, minGreenCandles: 0, minPriceChange: 0.0 };
+  private config = { 
+    timeframe: '5m', 
+    smaPeriod: 20, 
+    volumeMultiplier: 3.0, 
+    minVolume: 10000.0, 
+    minGreenCandles: 0, 
+    minPriceChange: 0.0,
+    totalCapital: 1000.0,
+    tradeAmount: 100.0,
+    trailingStopPct: 1.5
+  };
   private volumeHistory: Record<string, number[]> = {};
   private activeSymbols: string[] = [];
   private pendingAlerts: Record<string, { count: number, price: number, prevVol: number, currVol: number, mult: number }> = {};
+  private activePaperTrades: Record<string, any> = {};
 
   public getStatus(): BotStatus {
     return this.status;
@@ -25,8 +36,8 @@ class BinanceBotService {
     return this.config;
   }
 
-  public updateConfig(newConfig: { timeframe: string, smaPeriod: number, volumeMultiplier: number, minVolume: number, minGreenCandles: number, minPriceChange: number }) {
-    this.config = newConfig;
+  public updateConfig(newConfig: any) {
+    this.config = { ...this.config, ...newConfig };
   }
 
   public async start() {
@@ -51,16 +62,25 @@ class BinanceBotService {
         minVolume: dbConfig.minVolume,
         minGreenCandles: dbConfig.minGreenCandles || 0,
         minPriceChange: dbConfig.minPriceChange || 0.0,
+        totalCapital: dbConfig.totalCapital || 1000.0,
+        tradeAmount: dbConfig.tradeAmount || 100.0,
+        trailingStopPct: dbConfig.trailingStopPct || 1.5,
       };
 
-      // 2. Fetch Symbols (Top 100 USDT pairs by volume to avoid ws limits, or all)
+      // Load active paper trades from DB
+      const openTrades = await prisma.paperTrade.findMany({ where: { status: 'OPEN' } });
+      this.activePaperTrades = {};
+      openTrades.forEach(t => {
+        this.activePaperTrades[t.symbol] = t;
+      });
+
+      // 2. Fetch Symbols
       const res = await fetch('https://api.binance.com/api/v3/ticker/24hr');
       const tickers: any[] = await res.json();
 
       this.activeSymbols = tickers
         .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.volume) > 1000)
         .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-        // limited previously with .slice(0, 50) for demo stability. Now removed to monitor all pairs (Binance ws limit is 1024 streams per connection)
         .map(t => t.symbol);
 
       console.log(`[Bot] Monitored pairs: ${this.activeSymbols.length}`);
@@ -74,18 +94,17 @@ class BinanceBotService {
         });
       }
 
-      // 3. Pre-fetch historical volumes for SMA calculation
+      // 3. Pre-fetch historical volumes
       console.log('[Bot] Waking up background data...');
       for (const symbol of this.activeSymbols) {
         try {
           const klineRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${this.config.timeframe}&limit=${this.config.smaPeriod}`);
           const klines = await klineRes.json();
-          this.volumeHistory[symbol] = klines.map((k: any) => parseFloat(k[5])); // index 5 is volume
+          this.volumeHistory[symbol] = klines.map((k: any) => parseFloat(k[5]));
         } catch (err) {
           console.error(`[Bot] Failed fetching historical data for ${symbol}`);
         }
-        // Small delay to prevent rate limit
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 30));
       }
 
       // 4. Connect to WebSockets
@@ -106,6 +125,27 @@ class BinanceBotService {
           const kline = data.k;
           const isFinal = kline.x;
           const currentVolume = parseFloat(kline.v);
+          const currentPrice = parseFloat(kline.c);
+
+          // Real-time trailing stop check
+          if (this.activePaperTrades[symbol]) {
+            const trade = this.activePaperTrades[symbol];
+            
+            // Update peak price
+            if (currentPrice > trade.peakPrice) {
+              trade.peakPrice = currentPrice;
+              await prisma.paperTrade.update({
+                where: { id: trade.id },
+                data: { peakPrice: currentPrice }
+              });
+            }
+
+            // Check trailing stop
+            const stopPrice = trade.peakPrice * (1 - this.config.trailingStopPct / 100);
+            if (currentPrice <= stopPrice) {
+              await this.executePaperSell(symbol, currentPrice);
+            }
+          }
 
           if (!this.volumeHistory[symbol] || this.volumeHistory[symbol].length === 0) return;
 
@@ -113,44 +153,34 @@ class BinanceBotService {
           const averageVolume = history.reduce((a, b) => a + b, 0) / history.length;
 
           const openPrice = parseFloat(kline.o);
-          const currentPrice = parseFloat(kline.c);
           const priceChangePercent = Math.abs(((currentPrice - openPrice) / openPrice) * 100);
 
-          // Check if breakout (even before candle is closed!) - Filter with minVolume limit
           if (
             averageVolume >= this.config.minVolume &&
             currentVolume > averageVolume * this.config.volumeMultiplier &&
             priceChangePercent >= this.config.minPriceChange
           ) {
-            // Detect Breakout
             if (this.config.minGreenCandles === 0) {
-              this.triggerAlert({
+              await this.triggerAlert({
                 symbol,
                 currentVolume,
                 previousVolume: averageVolume,
                 multiplier: currentVolume / averageVolume,
-                price: parseFloat(kline.c),
+                price: currentPrice,
               });
             } else if (!this.pendingAlerts[symbol]) {
-              console.log(`[Bot] Potential breakout ${symbol}. Waiting for ${this.config.minGreenCandles} green candles...`);
+              console.log(`[Bot] Potential breakout ${symbol}. Waiting for confirmation...`);
               this.pendingAlerts[symbol] = {
                 count: 0,
-                price: parseFloat(kline.c),
+                price: currentPrice,
                 prevVol: averageVolume,
                 currVol: currentVolume,
                 mult: currentVolume / averageVolume
               };
             }
-
-            // To prevent spamming alert for the same candle, we can artificially increase the average 
-            // or mark this candle as alerted. For simplicity, we just log it and the UI will list it.
-            // Let's reset the history a bit or replace the last element so it doesn't alert 100 times min
-            this.volumeHistory[symbol].push(currentVolume);
-            this.volumeHistory[symbol].shift();
           }
 
           if (isFinal) {
-            // Check for pending alert confirmation
             if (this.pendingAlerts[symbol]) {
               const open = parseFloat(kline.o);
               const close = parseFloat(kline.c);
@@ -158,11 +188,9 @@ class BinanceBotService {
 
               if (isGreen) {
                 this.pendingAlerts[symbol].count++;
-                console.log(`[Bot] ${symbol} confirmed green candle ${this.pendingAlerts[symbol].count}/${this.config.minGreenCandles}`);
-
                 if (this.pendingAlerts[symbol].count >= this.config.minGreenCandles) {
                   const alert = this.pendingAlerts[symbol];
-                  this.triggerAlert({
+                  await this.triggerAlert({
                     symbol,
                     currentVolume: alert.currVol,
                     previousVolume: alert.prevVol,
@@ -172,7 +200,6 @@ class BinanceBotService {
                   delete this.pendingAlerts[symbol];
                 }
               } else {
-                console.log(`[Bot] ${symbol} failed confirmation (Red Candle). Cancelled alert.`);
                 delete this.pendingAlerts[symbol];
               }
             }
@@ -192,9 +219,7 @@ class BinanceBotService {
 
       this.ws.onclose = () => {
         console.log('[Bot] WebSocket Closed');
-        if (this.status === 'RUNNING') {
-          this.status = 'STOPPED';
-        }
+        if (this.status === 'RUNNING') this.status = 'STOPPED';
       };
 
     } catch (error) {
@@ -204,15 +229,11 @@ class BinanceBotService {
   }
 
   private async triggerAlert(data: { symbol: string, currentVolume: number, previousVolume: number, multiplier: number, price: number }) {
-    console.log(`[ALERT] 🚀 Breakout ${data.symbol}! Vol: ${data.currentVolume.toFixed(2)} (Avg: ${data.previousVolume.toFixed(2)})`);
+    console.log(`[ALERT] 🚀 Breakout ${data.symbol}! Vol: ${data.currentVolume.toFixed(2)} Price: ${data.price}`);
 
-    // Check if we recently alerted this within 3 minutes to avoid spam
     const cutoff = new Date(Date.now() - 3 * 60 * 1000);
     const recent = await prisma.breakoutAlert.findFirst({
-      where: {
-        symbol: data.symbol,
-        timestamp: { gt: cutoff }
-      }
+      where: { symbol: data.symbol, timestamp: { gt: cutoff } }
     });
 
     if (!recent) {
@@ -226,6 +247,68 @@ class BinanceBotService {
           priceAtBreakout: data.price
         }
       });
+
+      // Automatically execute paper buy if not already in a trade for this symbol
+      if (!this.activePaperTrades[data.symbol]) {
+        await this.executePaperBuy(data.symbol, data.price);
+      }
+    }
+  }
+
+  private async executePaperBuy(symbol: string, price: number) {
+    const openTrades = Object.values(this.activePaperTrades);
+    const investedCapital = openTrades.reduce((sum, t: any) => sum + t.invested, 0);
+    const availableCapital = this.config.totalCapital - investedCapital;
+
+    if (availableCapital < this.config.tradeAmount) {
+      console.log(`[Paper] Skipping ${symbol} - Insufficient capital (Available: ${availableCapital.toFixed(2)})`);
+      return;
+    }
+
+    const amount = this.config.tradeAmount / price;
+    
+    try {
+      const trade = await prisma.paperTrade.create({
+        data: {
+          symbol,
+          buyPrice: price,
+          amount: amount,
+          invested: this.config.tradeAmount,
+          peakPrice: price,
+          status: 'OPEN'
+        }
+      });
+
+      this.activePaperTrades[symbol] = trade;
+      console.log(`[Paper] 🟢 BOUGHT ${symbol} at ${price}. Amount: ${amount.toFixed(4)}`);
+    } catch (err) {
+      console.error(`[Paper] Failed to record buy for ${symbol}:`, err);
+    }
+  }
+
+  private async executePaperSell(symbol: string, price: number) {
+    const trade = this.activePaperTrades[symbol];
+    if (!trade) return;
+
+    const pnl = (price - trade.buyPrice) * trade.amount;
+    const pnlPercent = ((price - trade.buyPrice) / trade.buyPrice) * 100;
+
+    try {
+      await prisma.paperTrade.update({
+        where: { id: trade.id },
+        data: {
+          closePrice: price,
+          status: 'CLOSED',
+          pnl: pnl,
+          pnlPercent: pnlPercent,
+          closedAt: new Date()
+        }
+      });
+
+      delete this.activePaperTrades[symbol];
+      console.log(`[Paper] 🔴 SOLD ${symbol} at ${price}. PnL: ${pnl.toFixed(2)} (${pnlPercent.toFixed(2)}%)`);
+    } catch (err) {
+      console.error(`[Paper] Failed to record sell for ${symbol}:`, err);
     }
   }
 

@@ -23,7 +23,10 @@ export async function PUT(req: Request) {
       volumeMultiplier: parseFloat(data.volumeMultiplier) || 3.0,
       minVolume: parseFloat(data.minVolume) || 10000.0,
       minGreenCandles: parseInt(data.minGreenCandles) || 0,
-      minPriceChange: parseFloat(data.minPriceChange) || 0.0
+      minPriceChange: parseFloat(data.minPriceChange) || 0.0,
+      totalCapital: parseFloat(data.totalCapital) || 1000.0,
+      tradeAmount: parseFloat(data.tradeAmount) || 100.0,
+      trailingStopPct: parseFloat(data.trailingStopPct) || 1.5
     };
 
     const config = await prisma.botConfig.upsert({
@@ -37,14 +40,7 @@ export async function PUT(req: Request) {
     });
 
     // Update memory
-    botService.updateConfig({
-      timeframe: config.timeframe,
-      smaPeriod: config.smaPeriod,
-      volumeMultiplier: config.volumeMultiplier,
-      minVolume: config.minVolume,
-      minGreenCandles: config.minGreenCandles,
-      minPriceChange: config.minPriceChange
-    });
+    botService.updateConfig(config);
 
     // If bot is running, force it to restart to apply new config
     if (botService.getStatus() === 'RUNNING') {
